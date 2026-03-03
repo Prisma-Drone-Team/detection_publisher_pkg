@@ -41,6 +41,7 @@ struct ObjectDetection {
     char robot;
     std::string object_class;
     geometry_msgs::msg::TransformStamped tf_object;
+    int n_observations;
 };
 
 class DetectionPublisher : public rclcpp::Node

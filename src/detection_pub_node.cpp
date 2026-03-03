@@ -53,7 +53,7 @@ DetectionPublisher::DetectionPublisher()
     _ocv_to_pos[1] = tf2::Vector3(0,0,1);
     _ocv_to_pos[2] = tf2::Vector3(1,0,0);
     _ocv_to_pos_tf.setBasis(_ocv_to_pos);
-    RCLCPP_INFO(this->get_logger(), "Aruco TF Publisher inizializzato");
+    RCLCPP_INFO(this->get_logger(), "ArUco TF Publisher initialized");
 }
 
 void DetectionPublisher::detection_cb( const geometry_msgs::msg::TransformStamped::SharedPtr msg )
@@ -90,16 +90,49 @@ void DetectionPublisher::detection_cb( const geometry_msgs::msg::TransformStampe
         _existing_id = false;
         for( size_t i=0; i<_detections_vector.size(); i++ ) {
             if( _detections_vector[i].tf_detection.child_frame_id == "marker_id"+msg->child_frame_id ) {
-                RCLCPP_WARN(this->get_logger(), "Già presente");
+                RCLCPP_INFO(this->get_logger(), "Marker already present, updating with weighted average");
                 _already_present = true;
                 _detection_pos = i;
+                
+                // Aggiorna la rilevazione esistente con media pesata
+                geometry_msgs::msg::TransformStamped t;
+                try {
+                    t = _tf_buffer->lookupTransform( "map", msg->child_frame_id,  tf2::TimePointZero);
+                } catch (tf2::TransformException &ex) {
+                    RCLCPP_WARN(this->get_logger(), "Transform not available for update: %s", ex.what());
+                    break;
+                }
+                
+                // Calcola media pesata delle posizioni
+                int n_obs = _detections_vector[i].n_observations;
+                double weight_old = (double)n_obs / (n_obs + 1);
+                double weight_new = 1.0 / (n_obs + 1);
+                
+                _detections_vector[i].tf_detection.transform.translation.x = 
+                    weight_old * _detections_vector[i].tf_detection.transform.translation.x + 
+                    weight_new * t.transform.translation.x;
+                _detections_vector[i].tf_detection.transform.translation.y = 
+                    weight_old * _detections_vector[i].tf_detection.transform.translation.y + 
+                    weight_new * t.transform.translation.y;
+                _detections_vector[i].tf_detection.transform.translation.z = 
+                    weight_old * _detections_vector[i].tf_detection.transform.translation.z + 
+                    weight_new * t.transform.translation.z;
+                
+                // Per le rotazioni, sostituisco semplicemente per evitare problemi di interpolazione quaternioni
+                _detections_vector[i].tf_detection.transform.rotation = t.transform.rotation;
+                
+                // Incrementa il contatore delle osservazioni
+                _detections_vector[i].n_observations++;
+                
+                RCLCPP_INFO(this->get_logger(), "Marker %d updated: %d total observations", 
+                           _detections_vector[i].marker_id, _detections_vector[i].n_observations);
                 break;
             }
         }
         if( !_already_present ) {
             for( size_t i=0; i<_rover_detections_vector.size(); i++ ) {
                 if( _rover_detections_vector[i].tf_detection.child_frame_id == "marker_id"+msg->child_frame_id ) {
-                    RCLCPP_WARN(this->get_logger(), "Già presente");
+                    RCLCPP_WARN(this->get_logger(), "Already present");
                     _already_present = true;
                     break;
                 }
@@ -190,7 +223,39 @@ void DetectionPublisher::detection_rover_cb( const geometry_msgs::msg::Transform
             if( _rover_detections_vector[i].tf_detection.child_frame_id == "marker_id"+msg->child_frame_id ) {
                 _already_present_rover = true;
                 _detection_pos = i;
-                RCLCPP_INFO(this->get_logger(), "Updating existing detection with id: %d", _rover_detections_vector[_detection_pos].marker_id);
+                
+                // Aggiorna la rilevazione esistente con media pesata
+                geometry_msgs::msg::TransformStamped t;
+                try {
+                    t = _tf_buffer_rover->lookupTransform( "map", msg->child_frame_id,  tf2::TimePointZero);
+                } catch (tf2::TransformException &ex) {
+                    RCLCPP_WARN(this->get_logger(), "Transform not available for rover update: %s", ex.what());
+                    break;
+                }
+                
+                // Calcola media pesata delle posizioni
+                int n_obs = _rover_detections_vector[i].n_observations;
+                double weight_old = (double)n_obs / (n_obs + 1);
+                double weight_new = 1.0 / (n_obs + 1);
+                
+                _rover_detections_vector[i].tf_detection.transform.translation.x = 
+                    weight_old * _rover_detections_vector[i].tf_detection.transform.translation.x + 
+                    weight_new * t.transform.translation.x;
+                _rover_detections_vector[i].tf_detection.transform.translation.y = 
+                    weight_old * _rover_detections_vector[i].tf_detection.transform.translation.y + 
+                    weight_new * t.transform.translation.y;
+                _rover_detections_vector[i].tf_detection.transform.translation.z = 
+                    weight_old * _rover_detections_vector[i].tf_detection.transform.translation.z + 
+                    weight_new * t.transform.translation.z;
+                
+                // Per le rotazioni, sostituisco semplicemente per evitare problemi di interpolazione quaternioni
+                _rover_detections_vector[i].tf_detection.transform.rotation = t.transform.rotation;
+                
+                // Incrementa il contatore delle osservazioni
+                _rover_detections_vector[i].n_observations++;
+                
+                RCLCPP_INFO(this->get_logger(), "Rover marker %d updated: %d total observations", 
+                           _rover_detections_vector[i].marker_id, _rover_detections_vector[i].n_observations);
                 break;
             }
         }
@@ -211,7 +276,7 @@ void DetectionPublisher::detection_rover_cb( const geometry_msgs::msg::Transform
                 t = _tf_buffer_rover->lookupTransform( "map", msg->child_frame_id,  tf2::TimePointZero);
                 
             } catch (tf2::TransformException &ex) {
-                RCLCPP_WARN(this->get_logger(), "Transform non disponibile: %s", ex.what());
+                RCLCPP_WARN(this->get_logger(), "Transform not available: %s", ex.what());
             }
             new_detection.marker_id = std::stoi(id_str);
             new_detection.tf_detection.header.frame_id = "map";
@@ -390,28 +455,59 @@ void DetectionPublisher::parse_json_data(const json& json_data)
         new_object.tf_object.header.frame_id = "map";
         new_object.tf_object.child_frame_id = object_class;
         new_object.tf_object.transform = tf2::toMsg(T_final);
-        // new_object.tf_object.transform.translation.x = x;
-        // new_object.tf_object.transform.translation.x = _T_map_to_aruco_rover(0,3);
-        // new_object.tf_object.transform.translation.y = _T_map_to_aruco_rover(1,3);
-        // new_object.tf_object.transform.translation.y = 0.0;
-        // new_object.tf_object.transform.translation.z = z;
-        // new_object.tf_object.transform.rotation.x = 0.0;
-        // new_object.tf_object.transform.rotation.y = 0.0;
-        // new_object.tf_object.transform.rotation.z = 0.0;
-        // new_object.tf_object.transform.rotation.w = 1.0;
+        new_object.n_observations = 1;  // Initialize observation counter
         _objects_vector.push_back(new_object);
     } 
     else {
         _object_already_present = false;
+        int object_pos = -1;
         for( size_t i=0; i<_objects_vector.size(); i++ ) {
             if( _objects_vector[i].object_class == object_class ) {
                 _object_already_present = true;
-                RCLCPP_INFO(this->get_logger(), "Oggetto esistente, non aggiunto");
-                break ;
+                object_pos = i;
+                
+                // Aggiorna l'oggetto esistente con media pesata
+                tf2::Transform T_c2a_rover, T_final;
+                tf2::Stamped<tf2::Transform> T_m2c;
+                tf2::Matrix3x3 R;
+                R.setIdentity();
+                tf2::Vector3 p_c2a;
+                p_c2a.setValue(x, 0.0, z);
+                T_c2a_rover.setOrigin(p_c2a);
+                T_c2a_rover.setBasis(R);
+                tf2::fromMsg(_t_rover, T_m2c);
+                T_final.mult(T_m2c, T_c2a_rover);
+                
+                // Calcola media pesata delle posizioni
+                int n_obs = _objects_vector[i].n_observations;
+                double weight_old = (double)n_obs / (n_obs + 1);
+                double weight_new = 1.0 / (n_obs + 1);
+                
+                tf2::Vector3 old_pos = tf2::Vector3(
+                    _objects_vector[i].tf_object.transform.translation.x,
+                    _objects_vector[i].tf_object.transform.translation.y,
+                    _objects_vector[i].tf_object.transform.translation.z
+                );
+                tf2::Vector3 new_pos = T_final.getOrigin();
+                tf2::Vector3 avg_pos = old_pos * weight_old + new_pos * weight_new;
+                
+                _objects_vector[i].tf_object.transform.translation.x = avg_pos.x();
+                _objects_vector[i].tf_object.transform.translation.y = avg_pos.y();
+                _objects_vector[i].tf_object.transform.translation.z = avg_pos.z();
+                
+                // Per la rotazione, mantieni quella attuale (identità per oggetti YOLO)
+                _objects_vector[i].tf_object.transform.rotation = tf2::toMsg(T_final.getRotation());
+                
+                // Incrementa il contatore delle osservazioni
+                _objects_vector[i].n_observations++;
+                
+                RCLCPP_INFO(this->get_logger(), "Object %s updated: %d total observations", 
+                           object_class.c_str(), _objects_vector[i].n_observations);
+                break;
             }
         }
         if( !_object_already_present ) {
-            RCLCPP_INFO(this->get_logger(), "----NEW-----Nuovo oggetto, aggiunto");
+            RCLCPP_INFO(this->get_logger(), "----NEW-----New object added");
         ObjectDetection new_object;
         new_object.robot = _robot_id;
         new_object.object_class = object_class;
@@ -447,6 +543,7 @@ void DetectionPublisher::parse_json_data(const json& json_data)
         new_object.tf_object.header.frame_id = "map";
         new_object.tf_object.child_frame_id = object_class;
         new_object.tf_object.transform = tf2::toMsg(T_final);
+        new_object.n_observations = 1;  // Initialize observation counter
         _objects_vector.push_back(new_object);
         }
     }
@@ -464,12 +561,12 @@ void DetectionPublisher::listener_tf() {
         t = _tf_buffer->lookupTransform( "map", "zed_front_left_camera_optical_frame",  tf2::TimePointZero);
         
         // RCLCPP_INFO(this->get_logger(), 
-        //            "Transform trovata: [%f, %f, %f]", 
+        //            "Transform found: [%f, %f, %f]", 
         //            t.transform.translation.x,
         //            t.transform.translation.y,
         //            t.transform.translation.z);
     } catch (tf2::TransformException &ex) {
-        // RCLCPP_WARN(this->get_logger(), "Transform non disponibile: %s", ex.what());
+        // RCLCPP_WARN(this->get_logger(), "Transform not available: %s", ex.what());
     }
 
     _p_cam_to_map << t.transform.translation.x,
@@ -624,7 +721,7 @@ void DetectionPublisher::object_tf_pub() {
         tf_target_publish.transform.rotation.y = 0.0;
         tf_target_publish.transform.rotation.z = 0.0;
         tf_target_publish.transform.rotation.w = 1.0;
-        std::cout<<"Pubblico qui\n";
+        std::cout<<"Publishing here\n";
         // _tf_target_broadcaster->sendTransform(tf_target_publish);
         _tf_object_broadcaster->sendTransform(tf_target_publish);
     }   
