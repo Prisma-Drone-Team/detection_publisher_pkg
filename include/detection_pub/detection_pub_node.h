@@ -68,7 +68,6 @@ class DetectionPublisher : public rclcpp::Node
         rclcpp::Subscription<std_msgs::msg::String>::SharedPtr _subscription_object;
 
         std::unique_ptr<tf2_ros::TransformBroadcaster> _tf_broadcaster;
-        std::unique_ptr<tf2_ros::TransformBroadcaster> _tf_rover_broadcaster;
         std::unique_ptr<tf2_ros::TransformBroadcaster> _tf_object_broadcaster;
         rclcpp::TimerBase::SharedPtr _timer_tf_out;
         rclcpp::TimerBase::SharedPtr _timer_tf_in;
@@ -83,8 +82,7 @@ class DetectionPublisher : public rclcpp::Node
 
         std::shared_ptr<tf2_ros::StaticTransformBroadcaster> _tf_static_broadcaster;
 
-        std::vector<Detection> _detections_vector;
-        std::vector<Detection> _rover_detections_vector;
+        std::vector<Detection> _detections_vector;  // Unified vector for all ArUco detections
         std::vector<ObjectDetection> _objects_vector;
 
         Eigen::Vector3d _p_cam_to_map = Eigen::Vector3d::Zero();
@@ -123,7 +121,6 @@ class DetectionPublisher : public rclcpp::Node
         bool _added = false;
         bool _existing_id=false;
         bool _object_already_present=false;
-        char _robot_id = 'D';
 
 };
 

@@ -19,7 +19,6 @@ DetectionPublisher::DetectionPublisher()
         std::bind(&DetectionPublisher::detection_rover_cb, this, std::placeholders::_1));
 
     _tf_broadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
-    _tf_rover_broadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
     _tf_object_broadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
     _timer_tf_out = this->create_wall_timer(
@@ -58,11 +57,11 @@ DetectionPublisher::DetectionPublisher()
 
 void DetectionPublisher::detection_cb( const geometry_msgs::msg::TransformStamped::SharedPtr msg )
 {
-    // RCLCPP_INFO(this->get_logger(), "Rilevazione ricevuta, id: %s", msg->child_frame_id.c_str());
+    // RCLCPP_INFO(this->get_logger(), "Detection received, id: %s", msg->child_frame_id.c_str());
     if( _detections_vector.size() == 0 ) {
         RCLCPP_INFO(this->get_logger(), "First detection, adding to vector");
         Detection new_detection;
-        new_detection.robot = _robot_id;
+        new_detection.robot = 'D';  // Drone detection
         std::cout<<"child frame: "<<msg->child_frame_id<<std::endl;
         std::string id_str = (msg->child_frame_id).c_str(); // Extract substring after "marker_id"
         RCLCPP_INFO(this->get_logger(), "1");
@@ -74,7 +73,6 @@ void DetectionPublisher::detection_cb( const geometry_msgs::msg::TransformStampe
             RCLCPP_WARN(this->get_logger(), "Transform non disponibile: %s", ex.what());
             return;
         }
-        RCLCPP_INFO(this->get_logger(), "2");
         new_detection.marker_id = std::stoi(id_str);
         new_detection.tf_detection.header.frame_id = "map";
         new_detection.tf_detection.child_frame_id = "marker_id" + msg->child_frame_id;
@@ -83,7 +81,6 @@ void DetectionPublisher::detection_cb( const geometry_msgs::msg::TransformStampe
         new_detection.tf_detection.transform.rotation = t.transform.rotation;
         new_detection.n_observations = 1;
         _detections_vector.push_back(new_detection);
-        RCLCPP_INFO(this->get_logger(), "3");
     }
     else {
         _already_present = false;
@@ -94,7 +91,7 @@ void DetectionPublisher::detection_cb( const geometry_msgs::msg::TransformStampe
                 _already_present = true;
                 _detection_pos = i;
                 
-                // Aggiorna la rilevazione esistente con media pesata
+                // Update detection using weighted average
                 geometry_msgs::msg::TransformStamped t;
                 try {
                     t = _tf_buffer->lookupTransform( "map", msg->child_frame_id,  tf2::TimePointZero);
@@ -103,7 +100,7 @@ void DetectionPublisher::detection_cb( const geometry_msgs::msg::TransformStampe
                     break;
                 }
                 
-                // Calcola media pesata delle posizioni
+                // Calculate weighted average for position fusion
                 int n_obs = _detections_vector[i].n_observations;
                 double weight_old = (double)n_obs / (n_obs + 1);
                 double weight_new = 1.0 / (n_obs + 1);
@@ -118,29 +115,25 @@ void DetectionPublisher::detection_cb( const geometry_msgs::msg::TransformStampe
                     weight_old * _detections_vector[i].tf_detection.transform.translation.z + 
                     weight_new * t.transform.translation.z;
                 
-                // Per le rotazioni, sostituisco semplicemente per evitare problemi di interpolazione quaternioni
+                // Update rotation (replace for quaternion stability)
                 _detections_vector[i].tf_detection.transform.rotation = t.transform.rotation;
                 
-                // Incrementa il contatore delle osservazioni
+                // Mark as multi-robot fusion if different robot contributes
+                if (_detections_vector[i].robot != 'D') {
+                    _detections_vector[i].robot = 'M';  // 'M' for Multi-robot fusion
+                }
+                
+                // Increment observation counter
                 _detections_vector[i].n_observations++;
                 
-                RCLCPP_INFO(this->get_logger(), "Marker %d updated: %d total observations", 
+                RCLCPP_INFO(this->get_logger(), "Multi-robot fusion: marker %d updated with %d total observations", 
                            _detections_vector[i].marker_id, _detections_vector[i].n_observations);
                 break;
             }
         }
         if( !_already_present ) {
-            for( size_t i=0; i<_rover_detections_vector.size(); i++ ) {
-                if( _rover_detections_vector[i].tf_detection.child_frame_id == "marker_id"+msg->child_frame_id ) {
-                    RCLCPP_WARN(this->get_logger(), "Already present");
-                    _already_present = true;
-                    break;
-                }
-            }
-        }
-        if( !_already_present ) {
             Detection new_detection;
-            new_detection.robot = _robot_id;
+            new_detection.robot = 'D';  // Drone detection
             std::string id_str = (msg->child_frame_id).c_str(); // Extract substring after "marker_id"
             geometry_msgs::msg::TransformStamped t;
             try {
@@ -166,65 +159,36 @@ void DetectionPublisher::detection_cb( const geometry_msgs::msg::TransformStampe
 
 void DetectionPublisher::detection_rover_cb( const geometry_msgs::msg::TransformStamped::SharedPtr msg )
 {
-    // RCLCPP_INFO(this->get_logger(), "Rilevazione ricevuta, id: %s", msg->child_frame_id.c_str());
-    if( _rover_detections_vector.size() == 0 ) {
+    // RCLCPP_INFO(this->get_logger(), "Detection received, id: %s", msg->child_frame_id.c_str());
+    if( _detections_vector.size() == 0 ) {
         RCLCPP_INFO(this->get_logger(), "First detection, adding to vector");
         Detection new_detection;
-        new_detection.robot = _robot_id;
+        new_detection.robot = 'R';  // Rover detection
         std::string id_str = msg->child_frame_id.c_str(); // Extract substring after "marker_id"
         geometry_msgs::msg::TransformStamped t;
         try {
             t = _tf_buffer_rover->lookupTransform( "map", msg->child_frame_id,  tf2::TimePointZero);
             
         } catch (tf2::TransformException &ex) {
-            RCLCPP_WARN(this->get_logger(), "Transform non disponibile: %s", ex.what());
+            RCLCPP_WARN(this->get_logger(), "Transform not available: %s", ex.what());
             return;
         }
-        RCLCPP_INFO(this->get_logger(), "1");
         new_detection.marker_id = std::stoi(id_str);
-
-        // _p_temp_c_rover << msg->transform.translation.x,
-        // msg->transform.translation.y,
-        // msg->transform.translation.z,
-        // 1.0;
-        // _q_cam_to_aruco_rover << msg->transform.rotation.w,
-        //                   msg->transform.rotation.x,
-        //                   msg->transform.rotation.y,
-        //                   msg->transform.rotation.z;
-        // _R_cam_to_aruco_rover = QuatToMat( _q_cam_to_aruco_rover );
-        // _T_cam_to_aruco_rover.block<3,3>(0,0) = _R_cam_to_aruco_rover;
-        // _T_cam_to_aruco_rover.block<3,1>(0,3) = _p_temp_c_rover.head<3>();
-        // _T_cam_to_aruco_rover(3,3) = 1.0;
-        // // Transform from camera to map frame: _T_cam_to
-        // // _T_cam_to_aruco 
-        // _T_map_to_aruco_rover = _T_cam_to_map_rover * _T_cam_to_aruco_rover;
-        // _q_map_to_aruco_rover = r2quat( _T_map_to_aruco_rover.block<3,3>(0,0) );
         new_detection.tf_detection.header.frame_id = "map";
         new_detection.tf_detection.child_frame_id = "marker_id"+msg->child_frame_id;
-        // new_detection.tf_detection.transform.translation.x = t.;
-        // new_detection.tf_detection.transform.translation.y = _T_map_to_aruco_rover(1,3);
-        // new_detection.tf_detection.transform.translation.z = _T_map_to_aruco_rover(2,3);
-        new_detection.tf_detection.transform.translation = t.transform.translation;;
-        
+        new_detection.tf_detection.transform.translation = t.transform.translation;        
         new_detection.tf_detection.transform.rotation = t.transform.rotation;
-        // new_detection.tf_detection.transform.rotation.x = _q_map_to_aruco_rover(0);
-        // new_detection.tf_detection.transform.rotation.y = _q_map_to_aruco_rover(1);
-        // new_detection.tf_detection.transform.rotation.z = _q_map_to_aruco_rover(2);
-        // new_detection.tf_detection.transform.rotation.w = _q_map_to_aruco_rover(3);
-        // new_detection.tf_detection = *msg;
         new_detection.n_observations = 1;
-        _rover_detections_vector.push_back(new_detection);
-        RCLCPP_INFO(this->get_logger(), "2");
+        _detections_vector.push_back(new_detection);
     }
     else {
-        RCLCPP_INFO(this->get_logger(), "Else");
         _already_present_rover = false;
-        for( size_t i=0; i<_rover_detections_vector.size(); i++ ) {
-            if( _rover_detections_vector[i].tf_detection.child_frame_id == "marker_id"+msg->child_frame_id ) {
+        for( size_t i=0; i<_detections_vector.size(); i++ ) {
+            if( _detections_vector[i].tf_detection.child_frame_id == "marker_id"+msg->child_frame_id ) {
                 _already_present_rover = true;
                 _detection_pos = i;
                 
-                // Aggiorna la rilevazione esistente con media pesata
+                // Multi-robot fusion using weighted average
                 geometry_msgs::msg::TransformStamped t;
                 try {
                     t = _tf_buffer_rover->lookupTransform( "map", msg->child_frame_id,  tf2::TimePointZero);
@@ -233,43 +197,40 @@ void DetectionPublisher::detection_rover_cb( const geometry_msgs::msg::Transform
                     break;
                 }
                 
-                // Calcola media pesata delle posizioni
-                int n_obs = _rover_detections_vector[i].n_observations;
+                // Calculate weighted average for multi-robot fusion
+                int n_obs = _detections_vector[i].n_observations;
                 double weight_old = (double)n_obs / (n_obs + 1);
                 double weight_new = 1.0 / (n_obs + 1);
                 
-                _rover_detections_vector[i].tf_detection.transform.translation.x = 
-                    weight_old * _rover_detections_vector[i].tf_detection.transform.translation.x + 
+                _detections_vector[i].tf_detection.transform.translation.x = 
+                    weight_old * _detections_vector[i].tf_detection.transform.translation.x + 
                     weight_new * t.transform.translation.x;
-                _rover_detections_vector[i].tf_detection.transform.translation.y = 
-                    weight_old * _rover_detections_vector[i].tf_detection.transform.translation.y + 
+                _detections_vector[i].tf_detection.transform.translation.y = 
+                    weight_old * _detections_vector[i].tf_detection.transform.translation.y + 
                     weight_new * t.transform.translation.y;
-                _rover_detections_vector[i].tf_detection.transform.translation.z = 
-                    weight_old * _rover_detections_vector[i].tf_detection.transform.translation.z + 
+                _detections_vector[i].tf_detection.transform.translation.z = 
+                    weight_old * _detections_vector[i].tf_detection.transform.translation.z + 
                     weight_new * t.transform.translation.z;
                 
-                // Per le rotazioni, sostituisco semplicemente per evitare problemi di interpolazione quaternioni
-                _rover_detections_vector[i].tf_detection.transform.rotation = t.transform.rotation;
+                // Update rotation (replace for stability)
+                _detections_vector[i].tf_detection.transform.rotation = t.transform.rotation;
                 
-                // Incrementa il contatore delle osservazioni
-                _rover_detections_vector[i].n_observations++;
-                
-                RCLCPP_INFO(this->get_logger(), "Rover marker %d updated: %d total observations", 
-                           _rover_detections_vector[i].marker_id, _rover_detections_vector[i].n_observations);
-                break;
-            }
-        }
-        if(!_already_present_rover) {
-            for( size_t i=0; i<_detections_vector.size(); i++ ) {
-                if( _detections_vector[i].tf_detection.child_frame_id == "marker_id"+msg->child_frame_id ) {
-                    _already_present_rover = true;
-                    break;
+                // Mark as multi-robot fusion if different robot contributes
+                if (_detections_vector[i].robot != 'R') {
+                    _detections_vector[i].robot = 'M';  // 'M' for Multi-robot fusion
                 }
+                
+                // Increment observation counter
+                _detections_vector[i].n_observations++;
+                
+                RCLCPP_INFO(this->get_logger(), "Multi-robot fusion: marker %d updated with %d total observations", 
+                           _detections_vector[i].marker_id, _detections_vector[i].n_observations);
+                break;
             }
         }
         if( !_already_present_rover ) {
             Detection new_detection;
-            new_detection.robot = _robot_id;
+            new_detection.robot = 'R';  // Rover detection
             std::string id_str = msg->child_frame_id.c_str(); // Extract substring after "marker_id"
             geometry_msgs::msg::TransformStamped t;
             try {
@@ -281,11 +242,10 @@ void DetectionPublisher::detection_rover_cb( const geometry_msgs::msg::Transform
             new_detection.marker_id = std::stoi(id_str);
             new_detection.tf_detection.header.frame_id = "map";
             new_detection.tf_detection.child_frame_id = "marker_id"+msg->child_frame_id;
-            new_detection.tf_detection.transform.translation = t.transform.translation;;
-        
+            new_detection.tf_detection.transform.translation = t.transform.translation;        
             new_detection.tf_detection.transform.rotation = t.transform.rotation;
             new_detection.n_observations = 1;
-            _rover_detections_vector.push_back(new_detection);
+            _detections_vector.push_back(new_detection);
             RCLCPP_INFO(this->get_logger(), "New detection added with id: %d", new_detection.marker_id);
         }
     }
@@ -422,7 +382,7 @@ void DetectionPublisher::parse_json_data(const json& json_data)
     // std::cout<<_objects_vector.size()<<std::endl;
     if( _objects_vector.size() == 0 ) {
         ObjectDetection new_object;
-        new_object.robot = _robot_id;
+        new_object.robot = 'R';  // YOLO objects from rover
         new_object.object_class = object_class;
         new_object.tf_object.header.frame_id = "rover/camera_rgb_optical_frame";
         _p_temp_c_rover << x,
@@ -498,7 +458,7 @@ void DetectionPublisher::parse_json_data(const json& json_data)
                 // Per la rotazione, mantieni quella attuale (identità per oggetti YOLO)
                 _objects_vector[i].tf_object.transform.rotation = tf2::toMsg(T_final.getRotation());
                 
-                // Incrementa il contatore delle osservazioni
+                // Increment observation counter
                 _objects_vector[i].n_observations++;
                 
                 RCLCPP_INFO(this->get_logger(), "Object %s updated: %d total observations", 
@@ -509,7 +469,7 @@ void DetectionPublisher::parse_json_data(const json& json_data)
         if( !_object_already_present ) {
             RCLCPP_INFO(this->get_logger(), "----NEW-----New object added");
         ObjectDetection new_object;
-        new_object.robot = _robot_id;
+        new_object.robot = 'R';  // YOLO objects from rover
         new_object.object_class = object_class;
         new_object.tf_object.header.frame_id = "rover/camera_rgb_optical_frame";
         _p_temp_c_rover << x,
@@ -609,33 +569,26 @@ void DetectionPublisher::listener_rover_tf() {
 
 
 void DetectionPublisher::publish_tf() {
-    std::cout<<"\n Publisher TF for ID: [ "<<std::endl;
-
-
+    // Publisher TF for unified detections from all robots
     for( size_t i=0; i<_detections_vector.size(); i++ ) {
         rclcpp::Clock clock;
 
-        std::cout<<"DRONE 1 "<<std::endl;
-
+        // Publish main marker transform
         geometry_msgs::msg::TransformStamped tf_to_publish;
         tf_to_publish = _detections_vector[i].tf_detection;
         tf_to_publish.header.stamp = clock.now();
         _tf_broadcaster->sendTransform(tf_to_publish);
 
-        std::cout<<"2"<<std::endl;
-
+        // Publish rotation correction transform
         geometry_msgs::msg::TransformStamped tf_to_ocv;
         tf_to_ocv.header.frame_id = _detections_vector[i].tf_detection.child_frame_id;
         tf_to_ocv.header.stamp = clock.now();
         tf_to_ocv.child_frame_id = _detections_vector[i].tf_detection.child_frame_id+"_rot";
         tf_to_ocv.transform.rotation = tf2::toMsg(_ocv_to_pos_tf.getRotation());
         _tf_broadcaster->sendTransform(tf_to_ocv);
-        std::cout<<_detections_vector[i].marker_id<<", ";
 
-        std::cout<<"3"<<std::endl;
-
+        // Publish target approach transform
         geometry_msgs::msg::TransformStamped tf_target_publish;
-
         tf_target_publish.header.stamp = clock.now();
         // std::cout<<"Time: "<<tf_target_publish.header.stamp.sec<<"."<<tf_target_publish.header.stamp.nanosec;
         tf_target_publish.header.frame_id = _detections_vector[i].tf_detection.child_frame_id+"_rot";
@@ -653,46 +606,7 @@ void DetectionPublisher::publish_tf() {
 
         // _tf_target_broadcaster->sendTransform(tf_target_publish);
         _tf_broadcaster->sendTransform(tf_target_publish);
-        std::cout<<"4"<<std::endl;
     }   
-
-    for( size_t i=0; i<_rover_detections_vector.size(); i++ ) {
-
-        rclcpp::Clock clock;
-
-        geometry_msgs::msg::TransformStamped tf_to_publish;
-        tf_to_publish = _rover_detections_vector[i].tf_detection;
-        tf_to_publish.header.stamp = clock.now();
-        _tf_broadcaster->sendTransform(tf_to_publish);
-
-        geometry_msgs::msg::TransformStamped tf_to_ocv;
-        tf_to_ocv.header.frame_id = _rover_detections_vector[i].tf_detection.child_frame_id;
-        tf_to_ocv.header.stamp = clock.now();
-        tf_to_ocv.child_frame_id = _rover_detections_vector[i].tf_detection.child_frame_id+"_rot";
-        tf_to_ocv.transform.rotation = tf2::toMsg(_ocv_to_pos_tf.getRotation());
-        _tf_broadcaster->sendTransform(tf_to_ocv);
-        std::cout<<_rover_detections_vector[i].marker_id<<", ";
-
-        geometry_msgs::msg::TransformStamped tf_target_publish;
-
-        tf_target_publish.header.stamp = clock.now();
-        // std::cout<<"Time: "<<tf_target_publish.header.stamp.sec<<"."<<tf_target_publish.header.stamp.nanosec;
-        tf_target_publish.header.frame_id = _rover_detections_vector[i].tf_detection.child_frame_id+"_rot";
-        tf_target_publish.child_frame_id = _rover_detections_vector[i].tf_detection.child_frame_id+".target";
-        tf_target_publish.transform.translation.x = 1.0; 
-        tf_target_publish.transform.translation.y = 0.0; 
-        tf_target_publish.transform.translation.z = 0.0; 
-        tf2::Quaternion q_rot_z;
-        q_rot_z.setRPY(0, 0, M_PI);
-        tf_target_publish.transform.rotation = tf2::toMsg(q_rot_z);
-        // tf_target_publish.transform.rotation.x = 0.0;
-        // tf_target_publish.transform.rotation.y = 0.0;
-        // tf_target_publish.transform.rotation.z = 0.0;
-        // tf_target_publish.transform.rotation.w = 1.0;
-
-        // _tf_target_broadcaster->sendTransform(tf_target_publish);
-        _tf_rover_broadcaster->sendTransform(tf_target_publish);
-    }    
 }
 
 void DetectionPublisher::object_tf_pub() {
